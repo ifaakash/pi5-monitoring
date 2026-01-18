@@ -1,0 +1,14 @@
+services:
+  monitoring:
+    container_name: pi5-monitoring
+    build:
+      context: .
+      dockerfile: Dockerfile
+#    ports:
+#     - "8080:8080"
+    network_mode: host
+#     - pi5-monitoring
+
+#networks:
+# pi5-monitoring:
+#   driver: host

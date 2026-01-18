@@ -1,4 +1,6 @@
-FROM python:3.10.19-slim
+FROM python:3.10.19-slim AS baseimage
+
+FROM baseimage AS builder
 
 RUN apt-get update \
     && apt-get install -y iproute2 \

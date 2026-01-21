@@ -26,6 +26,13 @@ try:
         
     procs = monitoring.get_top_processes()
     print(f"Found {len(procs)} processes")
+    
+    health = monitoring.get_health()
+    print(f"Real Health Keys: {list(health.keys())}")
+    if "status" in health:
+        print("Health structure check passed")
+    else:
+        print("Health structure check FAILED: 'status' missing")
 
 except Exception as e:
     print(f"Error: {e}")

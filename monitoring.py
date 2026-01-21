@@ -33,9 +33,12 @@ def network_status():
     }
 
 def get_health():
+    net_stat = network_status()
     return {
         "uptime": get_uptime(),
-        "connectivity": network_status(),
+        "network": net_stat["network"],
+        "dns": net_stat["dns"],
+        "status": net_stat["status"],
         "processes": get_top_processes()
     }
 

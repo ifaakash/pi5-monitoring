@@ -7,40 +7,89 @@ import time
 # --- DATA GATHERING FUNCTIONS ---
 
 def get_listening_ports():
-    cmd = "ss -tulnpH | grep LISTEN"
-    result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
     listeners = []
-
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) < 5: continue # Safety check
-        
-        proto = parts[0]
-        local = parts[4]
-        
-        # Handle IPv6 [::]:22 vs IPv4 0.0.0.0:80
-        if local.startswith("["):
-            addr_port = local.split("]:")
-            ip = addr_port[0].strip("[")
-            port = addr_port[1]
-            family = "ipv6"
-        else:
-            ip_port = local.rsplit(":", 1)
-            ip_iface = ip_port[0]
-            port = ip_port[1]
-            if "%" in ip_iface:
-                ip = ip_iface.split("%", 1)[0]
+    
+    if platform.system() == "Darwin":
+        cmd = "lsof -i -P -n | grep LISTEN"
+        result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 9: continue
+            
+            # Format: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME (STATE)
+            # Example: python 123 user 3u IPv4 0x... 0t0 TCP *:8080 (LISTEN)
+            
+            # Extract relevant fields (indices might shift if Command has spaces, but standard split handles many cases)
+            # Assuming standard output for now. Safer to pick from end?
+            # State is last: (LISTEN)
+            # Address is second to last: *:8080
+            # Protocol is usually 8th element if we count from 0? 
+            # Let's try to match loosely or use fixed indices for standard cases.
+            
+            # Most reliable for lsof -i -P -n:
+            # -2 is address (e.g. *:8080)
+            # -1 is state (should be (LISTEN))
+            # Family is often at index 4 (IPv4/IPv6)
+            # Protocol is at index 7 (TCP)
+            
+            address = parts[-2]
+            proto = parts[-3].lower() # TCP -> tcp
+            family = parts[4].lower() # IPv4 -> ipv4
+            
+            if ":" in address:
+                ip_port = address.rsplit(":", 1)
+                ip = ip_port[0]
+                port = ip_port[1]
+                
+                # Cleanup IP
+                if ip == "*": ip = "0.0.0.0" if family == "ipv4" else "::"
             else:
-                ip = ip_iface
-            family = "ipv4"
+                continue
 
-        listeners.append({
-            "protocol": proto,
-            "ip": ip,
-            "port": int(port),
-            "family": family,
-            "scope": classify_scope(ip)
-        })
+            listeners.append({
+                "protocol": proto,
+                "ip": ip,
+                "port": int(port),
+                "family": family,
+                "scope": classify_scope(ip)
+            })
+            
+    else:
+        # Linux / SS command
+        cmd = "ss -tulnpH | grep LISTEN"
+        result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 5: continue # Safety check
+    
+            proto = parts[0]
+            local = parts[4]
+    
+            # Handle IPv6 [::]:22 vs IPv4 0.0.0.0:80
+            if local.startswith("["):
+                addr_port = local.split("]:")
+                ip = addr_port[0].strip("[")
+                port = addr_port[1]
+                family = "ipv6"
+            else:
+                ip_port = local.rsplit(":", 1)
+                ip_iface = ip_port[0]
+                port = ip_port[1]
+                if "%" in ip_iface:
+                    ip = ip_iface.split("%", 1)[0]
+                else:
+                    ip = ip_iface
+                family = "ipv4"
+    
+            listeners.append({
+                "protocol": proto,
+                "ip": ip,
+                "port": int(port),
+                "family": family,
+                "scope": classify_scope(ip)
+            })
+    listeners.sort(key=lambda x: x["port"])
     return listeners
 
 def classify_scope(ip):
@@ -60,9 +109,20 @@ def get_uptime():
     except:
         return "Unknown"
 
+import platform
+
 def check_network():
+    # Detect OS for correct ping timeout syntax
+    # Linux: -W 1 (1 second)
+    # macOS: -W 1000 (1000 milliseconds)
+    param = "-W"
+    if platform.system().lower() == "darwin":
+        timeout = "1000" 
+    else:
+        timeout = "1"
+
     # Reduced count and wait time for speed
-    res = subprocess.run(["ping", "-c", "1", "-W", "1", "8.8.8.8"], stdout=subprocess.DEVNULL)
+    res = subprocess.run(["ping", "-c", "1", param, timeout, "8.8.8.8"], stdout=subprocess.DEVNULL)
     return res.returncode == 0
 
 def check_dns():
@@ -76,7 +136,7 @@ def check_dns():
 def get_health():
     net = check_network()
     dns = check_dns()
-    
+
     if net and dns: status = "Online"
     elif net and not dns: status = "DNS Error"
     else: status = "Offline"
@@ -111,30 +171,31 @@ def render_html(health, ports):
     <html>
     <head>
         <title>Server Status</title>
+        <meta charset="UTF-8">
         <meta http-equiv="refresh" content="60"> <style>
             body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 40px; color: #333; }}
             .container {{ max_width: 800px; margin: 0 auto; }}
-            
+
             /* Cards */
             .card {{ background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); padding: 25px; margin-bottom: 20px; }}
-            
+
             /* Header Section */
             .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }}
             .status-dot {{ height: 12px; width: 12px; background-color: {status_color}; border-radius: 50%; display: inline-block; margin-right: 8px; }}
             .uptime {{ color: #666; font-size: 0.9em; }}
-            
+
             /* Table Styling */
             table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
             th {{ text-align: left; color: #888; font-weight: 600; font-size: 0.85em; text-transform: uppercase; padding-bottom: 15px; border-bottom: 2px solid #eee; }}
             td {{ padding: 12px 0; border-bottom: 1px solid #f0f0f0; }}
             tr:last-child td {{ border-bottom: none; }}
-            
+
             /* Utility */
             .mono {{ font-family: 'Monaco', 'Consolas', monospace; color: #555; }}
             .badge {{ padding: 4px 8px; border-radius: 4px; font-size: 0.75em; font-weight: bold; color: white; }}
             .tcp {{ background: #3498db; }}
             .udp {{ background: #9b59b6; }}
-            
+
             h2 {{ margin-top: 0; font-size: 1.2em; }}
         </style>
     </head>
@@ -151,7 +212,7 @@ def render_html(health, ports):
                     <span class="status-dot"></span> {health['status']}
                 </div>
                 <div style="margin-top: 10px; color: #666;">
-                    Network: {"✅" if health['network'] else "❌"} &nbsp;|&nbsp; 
+                    Network: {"✅" if health['network'] else "❌"} &nbsp;|&nbsp;
                     DNS: {"✅" if health['dns'] else "❌"}
                 </div>
             </div>
@@ -194,18 +255,18 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/ports":
             data = get_listening_ports()
             self._send_response(json.dumps(data, indent=2))
-            
+
         elif self.path == "/health":
             data = get_health()
             self._send_response(json.dumps(data, indent=2))
-            
+
         elif self.path == "/":
             # Gather all data for the HTML view
             health_data = get_health()
             ports_data = get_listening_ports()
             html_content = render_html(health_data, ports_data)
             self._send_response(html_content, "text/html")
-            
+
         else:
             self.send_response(404)
             self.end_headers()

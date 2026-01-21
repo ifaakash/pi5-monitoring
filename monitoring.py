@@ -5,51 +5,80 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 
 def get_listening_ports():
-    cmd = "ss -tulnpH | grep LISTEN"
-    result = subprocess.run(
-        cmd,
-        shell=True,
-        text=True,
-        capture_output=True
-    )
-
     listeners = []
 
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        proto = parts[0]
-        local = parts[4]
-
-        # Handle IPv6 [::]:22
-        if local.startswith("["):
-            addr_port = local.split("]:")
-            ip = addr_port[0].strip("[")
-            port = addr_port[1]
-            family = "ipv6"
-            iface = None
-        else:
-            # IPv4 127.0.0.53%lo:53
-            ip_port = local.rsplit(":", 1)
-            ip_iface = ip_port[0]
-            port = ip_port[1]
-
-            if "%" in ip_iface:
-                ip, iface = ip_iface.split("%", 1)
+    if platform.system() == "Darwin":
+        cmd = "lsof -i -P -n | grep LISTEN"
+        result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 9: continue
+            
+            address = parts[-2]
+            proto = parts[-3].lower()
+            family = parts[4].lower()
+            
+            if ":" in address:
+                ip_port = address.rsplit(":", 1)
+                ip = ip_port[0]
+                port = ip_port[1]
+                if ip == "*": ip = "0.0.0.0" if family == "ipv4" else "::"
             else:
-                ip = ip_iface
+                continue
+
+            listeners.append({
+                "protocol": proto,
+                "ip": ip,
+                "port": int(port),
+                "family": family,
+                "scope": classify_scope(ip)
+            })
+    else:
+        cmd = "ss -tulnpH | grep LISTEN"
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            text=True,
+            capture_output=True
+        )
+    
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 5: continue
+            proto = parts[0]
+            local = parts[4]
+    
+            # Handle IPv6 [::]:22
+            if local.startswith("["):
+                addr_port = local.split("]:")
+                ip = addr_port[0].strip("[")
+                port = addr_port[1]
+                family = "ipv6"
                 iface = None
+            else:
+                # IPv4 127.0.0.53%lo:53
+                ip_port = local.rsplit(":", 1)
+                ip_iface = ip_port[0]
+                port = ip_port[1]
+    
+                if "%" in ip_iface:
+                    ip, iface = ip_iface.split("%", 1)
+                else:
+                    ip = ip_iface
+                    iface = None
+    
+                family = "ipv4"
+    
+            listeners.append({
+                "protocol": proto,
+                "ip": ip,
+                "port": int(port),
+                # "interface": iface,
+                "family": family,
+                "scope": classify_scope(ip)
+            })
 
-            family = "ipv4"
-
-        listeners.append({
-            "protocol": proto,
-            "ip": ip,
-            "port": int(port),
-           # "interface": iface,
-            "family": family,
-            "scope": classify_scope(ip)
-        })
-
+    listeners.sort(key=lambda x: x["port"])
     return listeners
 
 def get_uptime():
@@ -66,9 +95,20 @@ def get_uptime():
         "human": f"{days}d {hours % 24}h {minutes % 60}m"
     }
 
+import platform
+
 def check_network():
+    # Detect OS for correct ping timeout syntax
+    # Linux: -W 2 (2 seconds)
+    # macOS: -W 2000 (2000 milliseconds)
+    param = "-W"
+    if platform.system().lower() == "darwin":
+        timeout = "2000" 
+    else:
+        timeout = "2"
+
     result = subprocess.run(
-        ["ping", "-c", "2", "-W", "2", "8.8.8.8"],
+        ["ping", "-c", "2", param, timeout, "8.8.8.8"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
